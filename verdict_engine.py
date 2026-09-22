@@ -1,20 +1,70 @@
-from upstash_redis import Redis
 import hashlib
 import json
 import os
+import re
+import time
 from dotenv import load_dotenv
+
 load_dotenv()
 
-redis = Redis(
-    url=os.environ.get("REDIS_URL"),
-    token=os.environ.get("REDIS_TOKEN")
-)
-
-import re
 from keyword_filter import keyword_filter
 from llm_analyzer import analyze_with_llm
 from reddit_search import search_reddit_evidence
 from legitimacy_checker import check_domain_age, check_company_existence
+
+# Resilient Caching Layer with In-Memory TTL Fallback
+_in_memory_cache: dict[str, tuple[float, str]] = {}
+_redis_client = None
+_redis_initialized = False
+
+def get_cache_backend():
+    """Lazily and safely gets the Upstash Redis client or falls back to in-memory."""
+    global _redis_client, _redis_initialized
+    if not _redis_initialized:
+        _redis_initialized = True
+        redis_url = os.environ.get("REDIS_URL")
+        redis_token = os.environ.get("REDIS_TOKEN")
+        if redis_url and redis_token:
+            try:
+                from upstash_redis import Redis
+                _redis_client = Redis(url=redis_url, token=redis_token)
+            except Exception:
+                _redis_client = None
+        else:
+            _redis_client = None
+    return _redis_client
+
+def get_cached_verdict(cache_key: str) -> dict | None:
+    redis = get_cache_backend()
+    if redis:
+        try:
+            val = redis.get(cache_key)
+            if val:
+                return json.loads(val)
+        except Exception:
+            pass  # Fall back to in-memory cache on connection issue
+
+    entry = _in_memory_cache.get(cache_key)
+    if entry:
+        expires_at, data = entry
+        if time.time() < expires_at:
+            return json.loads(data)
+        else:
+            del _in_memory_cache[cache_key]
+    return None
+
+def set_cached_verdict(cache_key: str, result: dict, ttl_seconds: int = 86400):
+    val_str = json.dumps(result)
+    redis = get_cache_backend()
+    if redis:
+        try:
+            redis.set(cache_key, val_str, ex=ttl_seconds)
+            return
+        except Exception:
+            pass  # Fall back to in-memory cache
+
+    # In-memory storage with expiry
+    _in_memory_cache[cache_key] = (time.time() + ttl_seconds, val_str)
 
 # Words that suggest real, confirmed scam reports when found in Reddit evidence
 STRONG_NEGATIVE_TERMS = ["scam", "fraud", "never join", "avoid", "warning", "fake"]
@@ -23,18 +73,28 @@ MILD_NEGATIVE_TERMS = ["careful", "unsure", "suspicious", "concerned", "risky"]
 
 def parse_llm_output(llm_text: str) -> dict:
     """
-    Pulls the structured fields out of the LLM's plain-text response.
-    Returns a dict with company_name, domain, verdict, confidence.
+    Pulls structured fields out of the LLM's plain-text response.
+    Validates fields to prevent malformed values from propagating.
     """
     def extract(field, text, default="Unknown"):
-        match = re.search(rf"{field}:\s*(.+)", text)
-        return match.group(1).strip() if match else default
+        match = re.search(rf"{field}:\s*(.+)", text, re.IGNORECASE)
+        if match:
+            # Strip tags and excess whitespace
+            val = re.sub(r"[<>]", "", match.group(1)).strip()
+            return val if val else default
+        return default
+
+    verdict_raw = extract("VERDICT", llm_text, default="UNKNOWN").upper()
+    verdict = verdict_raw if verdict_raw in ("LEGIT", "SUSPICIOUS", "SCAM") else "UNKNOWN"
+
+    confidence_raw = extract("CONFIDENCE", llm_text, default="LOW").upper()
+    confidence = confidence_raw if confidence_raw in ("LOW", "MEDIUM", "HIGH") else "LOW"
 
     return {
-        "company_name": extract("COMPANY_NAME", llm_text),
+        "company_name": extract("COMPANY_NAME", llm_text, default="Unknown"),
         "domain": extract("DOMAIN", llm_text, default="None"),
-        "verdict": extract("VERDICT", llm_text, default="UNKNOWN").upper(),
-        "confidence": extract("CONFIDENCE", llm_text, default="LOW").upper(),
+        "verdict": verdict,
+        "confidence": confidence,
     }
 
 
@@ -51,7 +111,7 @@ def score_keyword_filter(keyword_result: dict) -> int:
 
 
 def score_reddit_evidence(reddit_results: list[dict], company_name: str) -> int:
-    if not reddit_results or not company_name or company_name == "Unknown":
+    if not reddit_results or not company_name or company_name.lower() == "unknown":
         return 0
 
     # Split into meaningful words, ignoring tiny/common ones
@@ -63,7 +123,7 @@ def score_reddit_evidence(reddit_results: list[dict], company_name: str) -> int:
 
     relevant_results = []
     for r in reddit_results:
-        text = (r["title"] + " " + r["snippet"]).lower()
+        text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
         matches = sum(1 for w in company_words if w in text)
         # Require at least half the meaningful words to match, not just one
         if matches >= max(1, len(company_words) // 2):
@@ -72,7 +132,7 @@ def score_reddit_evidence(reddit_results: list[dict], company_name: str) -> int:
     if not relevant_results:
         return 0
 
-    combined_text = " ".join((r["title"] + " " + r["snippet"]).lower() for r in relevant_results)
+    combined_text = " ".join((r.get("title", "") + " " + r.get("snippet", "")).lower() for r in relevant_results)
 
     if any(term in combined_text for term in STRONG_NEGATIVE_TERMS):
         return 40
@@ -103,20 +163,25 @@ def get_verdict_label(score: int) -> str:
     return "LEGIT"
 
 
+def normalize_posting_text(text: str) -> str:
+    """Normalizes whitespace to prevent simple cache-busting by trailing spaces/newlines."""
+    return " ".join(text.split()).strip()
+
+
 def run_verdict_engine(posting_text: str) -> dict:
-    # Turn the posting text into a short, unique label for caching
-    cache_key = "scan:" + hashlib.sha256(posting_text.encode()).hexdigest()
-
-    # Check the sticky note first - was this exact posting already scanned?
-    cached_result = redis.get(cache_key)
-    if cached_result:
-        return json.loads(cached_result)
-
-    # ... rest of your existing code stays the same below this point
     """
     Runs all four signals and combines them into one suspicion score (0-100).
+    Normalizes text for robust caching.
     """
-        # 1. LLM analysis (also gives us company name + domain)
+    normalized_text = normalize_posting_text(posting_text)
+    cache_key = "scan:" + hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+
+    # Check cache first
+    cached_result = get_cached_verdict(cache_key)
+    if cached_result:
+        return cached_result
+
+    # 1. LLM analysis (also gives us company name + domain)
     llm_raw = analyze_with_llm(posting_text)
     llm_parsed = parse_llm_output(llm_raw)
 
@@ -128,25 +193,22 @@ def run_verdict_engine(posting_text: str) -> dict:
     # 2. Keyword filter
     keyword_result = keyword_filter(posting_text)
 
-    # 3. Reddit evidence (using the company name the LLM extracted)
+    # 3. Reddit evidence (search ONCE per scan)
     company_name = llm_parsed["company_name"]
     reddit_results = []
-    if company_name and company_name != "Unknown":
+    if company_name and company_name.lower() != "unknown":
         reddit_results = search_reddit_evidence(f"{company_name} scam")
 
-    # 4. Legitimacy checks (only if we have a usable domain)
+    # 4. Legitimacy checks
     domain = llm_parsed["domain"]
     domain_result = {"age_days": None, "error": "No domain stated in posting"}
-    if domain and domain != "None":
+    if domain and domain.lower() != "none":
         domain_result = check_domain_age(domain)
 
+    # Call company existence check properly
     existence_result = {"search_results_count": 0, "has_linkedin_page": False}
-    if company_name and company_name != "Unknown":
-        reddit_results = search_reddit_evidence(f"{company_name} scam")
-        print("REDDIT RESULTS FOUND:")
-        for r in reddit_results:
-            print("-", r["title"])
-            print(" ", r["snippet"])
+    if company_name and company_name.lower() != "unknown":
+        existence_result = check_company_existence(company_name)
 
     # Score each signal
     llm_score = score_llm_verdict(llm_parsed["verdict"])
@@ -174,18 +236,16 @@ def run_verdict_engine(posting_text: str) -> dict:
         }
     }
 
-    # Write the answer on the sticky note for next time (expires after 24 hours)
-    redis.set(cache_key, json.dumps(result), ex=86400)
+    # Cache result (expires after 24 hours)
+    set_cached_verdict(cache_key, result, ttl_seconds=86400)
 
     return result
 
+
 if __name__ == "__main__":
-    posting_text = """We're Hiring: Site Reliability Engineer
+    sample_text = """We're Hiring: Site Reliability Engineer
 LSEG (London Stock Exchange Group) is looking for a Site Reliability Engineer to join our team in Bengaluru, India.
 This is a hybrid role, full-time position. LSEG is a global financial markets infrastructure and data provider.
-Apply through our official careers page.
-
-"""  # <- added a blank line to force a fresh, non-cached run
-
-    result = run_verdict_engine(posting_text)
+Apply through our official careers page."""
+    result = run_verdict_engine(sample_text)
     print(result)
