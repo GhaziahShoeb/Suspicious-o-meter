@@ -5,7 +5,9 @@
   "description": "Scans job postings and emails for scam red flags",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "contextMenus",
+    "storage"
   ],
   "host_permissions": [
     "https://*.linkedin.com/*",

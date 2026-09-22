@@ -166,5 +166,76 @@ def test_rate_limiter_returns_429():
         ]
         status_codes = [r.status_code for r in responses]
         assert 429 in status_codes
-        # Ensure 500 does NOT occur when rate limit is exceeded
         assert 500 not in status_codes
+
+def test_llm_json_structured_output_parsing():
+    from llm_analyzer import parse_llm_json
+    json_text = """```json
+    {
+      "company_name": "OpenAI",
+      "domain": "openai.com",
+      "contact_emails": ["careers@openai.com"],
+      "red_flags": ["Urgent 24h deadline to accept"],
+      "verdict": "SUSPICIOUS",
+      "confidence": "HIGH",
+      "reasoning": "Artificial urgency created."
+    }
+    ```"""
+    parsed = parse_llm_json(json_text)
+    assert parsed["company_name"] == "OpenAI"
+    assert parsed["domain"] == "openai.com"
+    assert "careers@openai.com" in parsed["contact_emails"]
+    assert len(parsed["red_flags"]) == 1
+    assert parsed["verdict"] == "SUSPICIOUS"
+    assert parsed["confidence"] == "HIGH"
+    assert parsed["reasoning"] == "Artificial urgency created."
+
+def test_email_mismatch_heuristic():
+    from verdict_engine import check_email_mismatch
+    # Corporate company using Gmail recruiter
+    has_mismatch, score = check_email_mismatch(["recruiter123@gmail.com"], "Microsoft Corporation")
+    assert has_mismatch is True
+    assert score == 15
+
+    # Corporate company using official corporate email
+    has_mismatch, score = check_email_mismatch(["hr@microsoft.com"], "Microsoft Corporation")
+    assert has_mismatch is False
+    assert score == 0
+
+def test_suspicious_tld_heuristic():
+    from verdict_engine import check_suspicious_tld
+    has_suspicious, score = check_suspicious_tld("company-careers.xyz")
+    assert has_suspicious is True
+    assert score == 10
+
+    has_suspicious, score = check_suspicious_tld("company-careers.com")
+    assert has_suspicious is False
+    assert score == 0
+
+def test_breakdown_contains_red_flags_and_reasoning():
+    _in_memory_cache.clear()
+    structured_output = {
+        "company_name": "ScammyCorp",
+        "domain": "scammy.xyz",
+        "contact_emails": ["scammer@gmail.com"],
+        "red_flags": [
+            "Interview conducted via Telegram",
+            "Requires equipment fee payment"
+        ],
+        "verdict": "SCAM",
+        "confidence": "HIGH",
+        "reasoning": "High confidence scam with equipment fee fraud."
+    }
+
+    with patch("verdict_engine.analyze_with_llm", return_value=structured_output), \
+         patch("verdict_engine.search_reddit_evidence", return_value=[]), \
+         patch("verdict_engine.check_domain_age", return_value={"domain": "scammy.xyz", "age_days": 10, "error": None}), \
+         patch("verdict_engine.check_company_existence", return_value={"search_results_count": 0, "has_linkedin_page": False}):
+
+        res = run_verdict_engine("Join ScammyCorp today! Contact scammer@gmail.com on Telegram.")
+        assert res["verdict"] == "SCAM"
+        assert res["suspicion_score"] >= 50
+        assert len(res["breakdown"]["red_flags"]) == 2
+        assert res["breakdown"]["email_mismatch_detected"] is True
+        assert res["breakdown"]["suspicious_tld_detected"] is True
+        assert res["breakdown"]["reasoning"] != ""
