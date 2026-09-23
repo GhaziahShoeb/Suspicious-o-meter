@@ -1,47 +1,70 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <title>Suspicious-o-meter</title>
 <style>
-  body { width: 320px; padding: 12px; font-family: -apple-system, sans-serif; }
-  h3 { margin: 0 0 8px 0; }
-  #status { font-size: 13px; color: #666; margin-bottom: 12px; }
+  body { width: 340px; margin: 0; padding: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fafafa; color: #1e293b; }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  h3 { margin: 0; font-size: 16px; font-weight: 700; color: #0f172a; }
+  #scan-btn { background: #2563eb; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  #scan-btn:hover { background: #1d4ed8; }
+  #scan-btn:disabled { background: #94a3b8; cursor: not-allowed; }
+  #status { font-size: 12px; color: #64748b; margin-bottom: 10px; min-height: 16px; }
 
-  #score-box { text-align: center; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
-  #score-number { font-size: 32px; font-weight: bold; }
-  #verdict-label { font-size: 14px; font-weight: 600; text-transform: uppercase; }
+  #score-box { text-align: center; padding: 12px; border-radius: 8px; margin-bottom: 8px; border: 1px solid transparent; }
+  #score-number { font-size: 32px; font-weight: 800; line-height: 1.1; }
+  #verdict-label { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+  #reasoning-text { font-size: 11.5px; color: #475569; margin-bottom: 12px; line-height: 1.4; padding: 6px 8px; background: #f1f5f9; border-radius: 6px; }
 
-  .tabs { display: flex; border-bottom: 1px solid #ddd; margin-bottom: 10px; }
-  .tab-btn { flex: 1; padding: 8px; background: none; border: none; cursor: pointer; font-size: 12px; }
-  .tab-btn.active { border-bottom: 2px solid #333; font-weight: bold; }
+  .tabs { display: flex; border-bottom: 1px solid #e2e8f0; margin-bottom: 10px; }
+  .tab-btn { flex: 1; padding: 8px 2px; background: none; border: none; cursor: pointer; font-size: 11.5px; font-weight: 500; color: #64748b; text-align: center; }
+  .tab-btn.active { border-bottom: 2px solid #2563eb; color: #2563eb; font-weight: 700; }
 
-  .tab-content { display: none; font-size: 13px; line-height: 1.4; }
+  .tab-content { display: none; font-size: 12px; line-height: 1.5; color: #334155; }
   .tab-content.active { display: block; }
+  .metric-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #f1f5f9; }
+  .metric-label { font-weight: 600; }
+  .flag-item { display: flex; gap: 6px; padding: 4px 0; border-bottom: 1px solid #f1f5f9; font-size: 11.5px; }
 
-  #loading { text-align: center; padding: 20px; color: #999; }
+  #loading { text-align: center; padding: 24px; color: #64748b; font-size: 13px; }
+  .footer { margin-top: 14px; padding-top: 8px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; }
+  #feedback-btn { background: none; border: none; color: #64748b; font-size: 11px; cursor: pointer; padding: 0; text-decoration: underline; }
+  #toast { font-size: 11px; color: #16a34a; font-weight: 500; display: none; }
 </style>
 </head>
 <body>
-  <h3>Suspicious-o-meter</h3>
-  <div id="status">Scanning current page...</div>
+  <div class="header">
+    <h3>Suspicious-o-meter</h3>
+    <button id="scan-btn">Scan Page</button>
+  </div>
 
-  <div id="loading">Loading...</div>
+  <div id="status">Ready</div>
+  <div id="loading" style="display:none;">Analyzing posting...</div>
 
   <div id="results" style="display:none;">
     <div id="score-box">
       <div id="score-number">--</div>
       <div id="verdict-label">--</div>
     </div>
+    <div id="reasoning-text"></div>
 
     <div class="tabs">
-      <button class="tab-btn active" data-tab="llm">LLM</button>
+      <button class="tab-btn active" data-tab="flags">Red Flags</button>
+      <button class="tab-btn" data-tab="llm">LLM</button>
       <button class="tab-btn" data-tab="reddit">Reddit</button>
       <button class="tab-btn" data-tab="legitimacy">Legitimacy</button>
     </div>
 
-    <div id="llm-tab" class="tab-content active"></div>
+    <div id="flags-tab" class="tab-content active"></div>
+    <div id="llm-tab" class="tab-content"></div>
     <div id="reddit-tab" class="tab-content"></div>
     <div id="legitimacy-tab" class="tab-content"></div>
+
+    <div class="footer">
+      <button id="feedback-btn">Report Inaccuracy</button>
+      <span id="toast">Feedback received!</span>
+    </div>
   </div>
 
   <script src="popup.js"></script>

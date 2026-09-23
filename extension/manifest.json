@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Suspicious-o-meter",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Scans job postings and emails for scam red flags",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "contextMenus",
+    "storage"
   ],
   "host_permissions": [
     "https://*.linkedin.com/*",
@@ -23,8 +25,7 @@
     {
       "matches": [
         "https://*.linkedin.com/jobs/*",
-        "https://*.indeed.com/viewjob*",
-        "https://mail.google.com/*"
+        "https://*.indeed.com/viewjob*"
       ],
       "js": [
         "content.js"
