@@ -1,77 +1,21 @@
-import os
-import re
-from datetime import datetime
-from urllib.parse import urlparse
 import requests
+from datetime import datetime
+import os
 from dotenv import load_dotenv
-
 load_dotenv()
 
-DOMAIN_REGEX = re.compile(
-    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
-)
 
-def extract_and_validate_domain(domain_input: str) -> str | None:
-    """
-    Extracts the clean host domain from a URL or raw string, and validates that
-    it is a valid FQDN (Fully Qualified Domain Name). Rejects IP addresses and invalid formats.
-    """
-    if not domain_input or domain_input.lower() in ("none", "unknown", "n/a"):
-        return None
-
-    candidate = domain_input.strip()
-    if "://" in candidate:
-        try:
-            candidate = urlparse(candidate).netloc
-        except Exception:
-            return None
-
-    # Strip port, path, and auth if present
-    candidate = candidate.split("/")[0].split(":")[0].strip().lower()
-
-    # Reject localhost, IPs, and check against FQDN regex
-    if candidate in ("localhost", "127.0.0.1") or re.match(r"^\d{1,3}(\.\d{1,3}){3}$", candidate):
-        return None
-
-    if DOMAIN_REGEX.match(candidate):
-        return candidate
-    return None
-
-def sanitize_company_name(name: str) -> str:
-    """Strips quotes and search operators to avoid query injection."""
-    if not name:
-        return ""
-    cleaned = re.sub(r'["\'\(\)\[\]\{\}\\\^\~\*\?:]', ' ', name)
-    cleaned = re.sub(r'\b(site|inurl|intitle|filetype|AND|OR|NOT)\b', ' ', cleaned, flags=re.IGNORECASE)
-    return " ".join(cleaned.split()).strip()
+WHOIS_API_KEY = os.environ.get("WHOIS_API_KEY")
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
 def check_domain_age(domain: str) -> dict:
     """
     Looks up how old a domain is using WHOIS data.
-    Validates domain syntax and handles missing API keys gracefully.
     """
-    valid_domain = extract_and_validate_domain(domain)
-    if not valid_domain:
-        return {
-            "domain": domain,
-            "created_date": None,
-            "age_days": None,
-            "error": "Invalid or missing domain format"
-        }
-
-    whois_api_key = os.environ.get("WHOIS_API_KEY")
-    if not whois_api_key:
-        return {
-            "domain": valid_domain,
-            "created_date": None,
-            "age_days": None,
-            "error": "WHOIS_API_KEY is not configured"
-        }
-
     url = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
     params = {
-        "apiKey": whois_api_key,
-        "domainName": valid_domain,
+        "apiKey": WHOIS_API_KEY,
+        "domainName": domain,
         "outputFormat": "JSON"
     }
 
@@ -81,7 +25,7 @@ def check_domain_age(domain: str) -> dict:
         data = response.json()
     except Exception as e:
         return {
-            "domain": valid_domain,
+            "domain": domain,
             "created_date": None,
             "age_days": None,
             "error": f"WHOIS lookup failed: {e}"
@@ -92,7 +36,7 @@ def check_domain_age(domain: str) -> dict:
 
     if not created_date_str:
         return {
-            "domain": valid_domain,
+            "domain": domain,
             "created_date": None,
             "age_days": None,
             "error": "No creation date found in WHOIS data"
@@ -103,14 +47,14 @@ def check_domain_age(domain: str) -> dict:
         age_days = (datetime.now(created_date.tzinfo) - created_date).days
     except Exception as e:
         return {
-            "domain": valid_domain,
+            "domain": domain,
             "created_date": created_date_str,
             "age_days": None,
             "error": f"Could not parse date: {e}"
         }
 
     return {
-        "domain": valid_domain,
+        "domain": domain,
         "created_date": created_date_str,
         "age_days": age_days,
         "error": None
@@ -119,36 +63,34 @@ def check_domain_age(domain: str) -> dict:
 
 def check_company_existence(company_name: str) -> dict:
     """
-    Searches for signs the company is a real, registered entity.
-    Sanitizes search query and handles missing API key.
+    STAND-IN for OpenCorporates (which requires application/approval we don't
+    have yet). Uses a general web search to look for signs the company is a
+    real, registered entity - official filings, business directories, a
+    LinkedIn company page.
+
+    This is a WEAKER signal than an actual government registry lookup:
+    - A positive result (found LinkedIn/directory listings) is reasonably
+      reassuring.
+    - A negative result (nothing found) is NOT strong evidence of fraud -
+      it could just mean poor search visibility, a very new company, or
+      weak search coverage for smaller/regional businesses.
+
+    Returns:
+    {
+        "company_name": "...",
+        "has_linkedin_page": True/False,
+        "search_results_count": 3,
+        "top_results": [...],
+        "error": None or error message
+    }
     """
-    clean_name = sanitize_company_name(company_name)
-    if not clean_name or clean_name.lower() == "unknown":
-        return {
-            "company_name": company_name,
-            "has_linkedin_page": False,
-            "search_results_count": 0,
-            "top_results": [],
-            "error": "No valid company name provided"
-        }
-
-    serper_api_key = os.environ.get("SERPER_API_KEY")
-    if not serper_api_key:
-        return {
-            "company_name": clean_name,
-            "has_linkedin_page": False,
-            "search_results_count": 0,
-            "top_results": [],
-            "error": "SERPER_API_KEY is not configured"
-        }
-
     url = "https://google.serper.dev/search"
     headers = {
-        "X-API-KEY": serper_api_key,
+        "X-API-KEY": SERPER_API_KEY,
         "Content-Type": "application/json"
     }
     payload = {
-        "q": f'"{clean_name}" (linkedin.com OR "registered company" OR "Pvt Ltd" OR "Ltd" OR incorporated)'
+        "q": f'"{company_name}" (linkedin.com OR "registered company" OR "Pvt Ltd" OR "Ltd" OR incorporated)'
     }
 
     try:
@@ -157,7 +99,7 @@ def check_company_existence(company_name: str) -> dict:
         data = response.json()
     except Exception as e:
         return {
-            "company_name": clean_name,
+            "company_name": company_name,
             "has_linkedin_page": False,
             "search_results_count": 0,
             "top_results": [],
@@ -165,14 +107,16 @@ def check_company_existence(company_name: str) -> dict:
         }
 
     raw_results = data.get("organic", [])[:5]
+
     has_linkedin_page = any("linkedin.com" in r.get("link", "") for r in raw_results)
+
     top_results = [
         {"title": r.get("title", ""), "url": r.get("link", "")}
         for r in raw_results
     ]
 
     return {
-        "company_name": clean_name,
+        "company_name": company_name,
         "has_linkedin_page": has_linkedin_page,
         "search_results_count": len(raw_results),
         "top_results": top_results,
