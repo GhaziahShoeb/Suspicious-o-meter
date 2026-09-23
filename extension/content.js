@@ -1,5 +1,5 @@
 // ---- Config ----
-const SCAN_ENDPOINT = "http://127.0.0.1:8000/scan";
+const SCAN_ENDPOINT = "https://suspicious-o-meter.onrender.com/scan";
 const DEBOUNCE_MS = 800;
 
 let lastScannedHash = null;

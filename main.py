@@ -7,6 +7,13 @@ from verdict_engine import run_verdict_engine
 
 limiter = Limiter(key_func=get_remote_address)
 
+import sentry_sdk
+import os
+sentry_sdk.init(
+    dsn=os.environ.get("SENTRY_DSN"),
+    traces_sample_rate=1.0,
+)
+
 app = FastAPI()
 app.state.limiter = limiter
 
