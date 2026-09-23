@@ -1,4 +1,5 @@
 import logging
+import sentry_sdk
 import os
 from fastapi import FastAPI, Request, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
@@ -10,6 +11,11 @@ from slowapi.util import get_remote_address
 from dotenv import load_dotenv
 
 load_dotenv()
+
+sentry_sdk.init(
+    dsn=os.environ.get("SENTRY_DSN"),
+    traces_sample_rate=1.0,
+)
 
 from verdict_engine import run_verdict_engine
 
@@ -77,6 +83,7 @@ def scan_job(request: Request, job: ScanRequest, _auth: str = Depends(verify_api
         return result
     except Exception as e:
         logger.exception("Internal error processing scan request")
+        sentry_sdk.capture_exception(e)
         # Mask internal exception details to prevent information disclosure
         return {
             "suspicion_score": 0,
