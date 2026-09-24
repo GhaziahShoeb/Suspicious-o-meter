@@ -46,7 +46,7 @@ extra_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=extra_origins,
-    allow_origin_regex=r"^(chrome-extension://[a-p]{32}|http://(localhost|127\.0\.0\.1)(:\d+)?)$",
+    allow_origin_regex=r"^(chrome-extension://[a-p]{32}|http://(localhost|127\.0\.0\.1)(:\d+)?|https://mail\.google\.com|https://([a-z0-9-]+\.)?(linkedin|indeed)\.com)$",
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )

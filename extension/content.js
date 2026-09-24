@@ -100,7 +100,6 @@ function runScan() {
   if (currentHash === lastScannedHash) return; // already scanned this exact content
   lastScannedHash = currentHash;
 
-  console.log("Suspicious-o-meter: scanning content (first 300 chars):", text.slice(0, 300));
 
 fetch(SCAN_ENDPOINT, {
   method: "POST",
