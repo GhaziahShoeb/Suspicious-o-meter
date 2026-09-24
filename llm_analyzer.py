@@ -65,7 +65,7 @@ def analyze_with_llm(posting_text: str) -> str:
     Raises an exception if the API call fails - caller is responsible for handling it.
     """
     # Neutralize delimiter markers BEFORE the text goes into the template
-    posting_text = sanitize_posting(posting_text)
+    posting_text = sanitize_posting(posting_text)[:4000]
 
     prompt = PROMPT_TEMPLATE.format(posting_text=posting_text)
 

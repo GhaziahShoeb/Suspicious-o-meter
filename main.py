@@ -9,6 +9,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from verdict_engine import run_verdict_engine
+from fastapi.responses import JSONResponse
+from groq import RateLimitError
 
 load_dotenv()
 
@@ -73,6 +75,12 @@ def scan_job(request: Request, job: ScanRequest):
     try:
         result = run_verdict_engine(job.text)
         return result
+    except RateLimitError:
+        # Groq's free tier caps tokens per minute; tell the client to retry
+        return JSONResponse(
+            status_code=503,
+            content={"verdict": "ERROR", "error": "The analysis service is busy. Please try again in a minute."},
+        )
     except Exception as e:
         logger.exception("Internal error processing scan request")
         sentry_sdk.capture_exception(e)
