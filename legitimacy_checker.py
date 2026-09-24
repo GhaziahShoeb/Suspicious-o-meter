@@ -1,3 +1,4 @@
+import re
 import requests
 from datetime import datetime
 import os
@@ -8,10 +9,54 @@ load_dotenv()
 WHOIS_API_KEY = os.environ.get("WHOIS_API_KEY")
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
+# Each label 1-63 chars of a-z/0-9/hyphen (not starting/ending with hyphen), at least one dot
+DOMAIN_RE = re.compile(
+    r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"
+)
+
+
+def clean_company_name(name: str) -> str:
+    """
+    Makes an LLM-extracted company name safe to put inside a search query.
+    Keeps letters, digits, spaces and a few harmless punctuation marks; drops
+    quotes, colons, parentheses, newlines and anything else that could break
+    out of the quoted phrase and act as a search operator.
+    """
+    name = re.sub(r"[^\w\s&.,'\-]", " ", str(name or ""))
+    name = re.sub(r"\s+", " ", name).strip()
+    return name[:80]
+
+
+def clean_domain(domain: str):
+    """
+    Normalizes an LLM-extracted domain (strips scheme, path, port, 'www.') and
+    validates it. Returns the cleaned domain, or None if it isn't a valid one.
+    """
+    d = str(domain or "").strip().lower()
+    d = re.sub(r"^[a-z][a-z0-9+.-]*://", "", d)
+    d = re.split(r"[/?#]", d)[0]
+    d = d.split(":")[0]
+    if d.startswith("www."):
+        d = d[4:]
+    if len(d) > 253 or not DOMAIN_RE.match(d):
+        return None
+    return d
+
+
 def check_domain_age(domain: str) -> dict:
     """
     Looks up how old a domain is using WHOIS data.
     """
+    original = str(domain or "")[:100]
+    domain = clean_domain(domain)
+    if domain is None:
+        return {
+            "domain": original,
+            "created_date": None,
+            "age_days": None,
+            "error": "Invalid domain"
+        }
+
     url = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
     params = {
         "apiKey": WHOIS_API_KEY,
@@ -24,11 +69,13 @@ def check_domain_age(domain: str) -> dict:
         response.raise_for_status()
         data = response.json()
     except Exception as e:
+        # Don't include str(e): requests errors contain the full URL, which
+        # here includes the API key in the query string.
         return {
             "domain": domain,
             "created_date": None,
             "age_days": None,
-            "error": f"WHOIS lookup failed: {e}"
+            "error": f"WHOIS lookup failed ({type(e).__name__})"
         }
 
     whois_record = data.get("WhoisRecord", {})
@@ -50,7 +97,7 @@ def check_domain_age(domain: str) -> dict:
             "domain": domain,
             "created_date": created_date_str,
             "age_days": None,
-            "error": f"Could not parse date: {e}"
+            "error": f"Could not parse date ({type(e).__name__})"
         }
 
     return {
@@ -84,6 +131,16 @@ def check_company_existence(company_name: str) -> dict:
         "error": None or error message
     }
     """
+    company_name = clean_company_name(company_name)
+    if not company_name:
+        return {
+            "company_name": "",
+            "has_linkedin_page": False,
+            "search_results_count": 0,
+            "top_results": [],
+            "error": "Invalid company name"
+        }
+
     url = "https://google.serper.dev/search"
     headers = {
         "X-API-KEY": SERPER_API_KEY,
@@ -103,7 +160,7 @@ def check_company_existence(company_name: str) -> dict:
             "has_linkedin_page": False,
             "search_results_count": 0,
             "top_results": [],
-            "error": f"Search failed: {e}"
+            "error": f"Search failed ({type(e).__name__})"
         }
 
     raw_results = data.get("organic", [])[:5]

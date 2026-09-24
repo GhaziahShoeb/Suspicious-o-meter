@@ -15,10 +15,30 @@ function setScoreColor(score) {
   else box.style.background = "#e2f7e2";
 }
 
+// Fills a tab with "label value" lines using textContent only, so any value
+// (even one containing HTML) is displayed as plain text and never executed.
+function renderRows(elementId, rows) {
+  const container = document.getElementById(elementId);
+  container.textContent = "";
+  rows.forEach(([label, value]) => {
+    const line = document.createElement("div");
+    const bold = document.createElement("b");
+    bold.textContent = label + " ";
+    line.appendChild(bold);
+    line.appendChild(document.createTextNode(String(value)));
+    container.appendChild(line);
+  });
+}
+
 function renderResults(data) {
+  // Error responses (rate limit, internal error) have no breakdown to show
+  if (!data || !data.breakdown) {
+    showError((data && data.error) || "Scan failed. Please try again.");
+    return;
+  }
+
   document.getElementById("loading").style.display = "none";
   document.getElementById("results").style.display = "block";
-  document.getElementById("status").textContent = "Scan complete";
 
   document.getElementById("score-number").textContent = data.suspicion_score;
   document.getElementById("verdict-label").textContent = data.verdict;
@@ -26,16 +46,22 @@ function renderResults(data) {
   document.getElementById("status").textContent = "Company: " + (data.company_name || "Unknown");
 
   const b = data.breakdown;
-  document.getElementById("llm-tab").innerHTML =
-    `<b>Verdict:</b> ${b.llm_verdict}<br><b>Score contribution:</b> ${b.llm_score}`;
 
-  document.getElementById("reddit-tab").innerHTML =
-    `<b>Results found:</b> ${b.reddit_results_found}<br><b>Score contribution:</b> ${b.reddit_score}`;
+  renderRows("llm-tab", [
+    ["Verdict:", b.llm_verdict],
+    ["Score contribution:", b.llm_score],
+  ]);
 
-  document.getElementById("legitimacy-tab").innerHTML =
-    `<b>Domain age (days):</b> ${b.domain_age_days ?? "Unknown"}<br>` +
-    `<b>Found online:</b> ${b.company_found_online ? "Yes" : "No"}<br>` +
-    `<b>Score contribution:</b> ${b.legitimacy_score}`;
+  renderRows("reddit-tab", [
+    ["Results found:", b.reddit_results_found],
+    ["Score contribution:", b.reddit_score],
+  ]);
+
+  renderRows("legitimacy-tab", [
+    ["Domain age (days):", b.domain_age_days ?? "Unknown"],
+    ["Found online:", b.company_found_online ? "Yes" : "No"],
+    ["Score contribution:", b.legitimacy_score],
+  ]);
 }
 
 function showError(message) {
@@ -51,7 +77,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       return;
     }
 
-    // Call your backend's /scan endpoint (must be running locally for now)
+    // Call your backend's /scan endpoint
     fetch("https://suspicious-o-meter.onrender.com/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
