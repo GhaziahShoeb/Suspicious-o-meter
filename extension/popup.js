@@ -52,7 +52,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     }
 
     // Call your backend's /scan endpoint (must be running locally for now)
-    fetch("http://127.0.0.1:8000/scan", {
+    fetch("https://suspicious-o-meter.onrender.com/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: tabs[0].url, text: response.text })

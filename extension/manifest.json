@@ -5,13 +5,14 @@
   "description": "Scans job postings and emails for scam red flags",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "https://*.linkedin.com/*",
     "https://*.indeed.com/*",
     "https://mail.google.com/*",
-    "http://127.0.0.1:8000/*"
+    "https://suspicious-o-meter.onrender.com/*"
   ],
   "background": {
     "service_worker": "background.js"
