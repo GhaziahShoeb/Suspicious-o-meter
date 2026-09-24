@@ -4,6 +4,7 @@ A browser extension + backend that automatically scans job postings and emails f
 
 **Live backend:** https://suspicious-o-meter.onrender.com
 
+
 ## The problem
 
 Job and internship scams increasingly avoid obvious giveaway language ("wire us money," "send gift cards") in favor of plausible, well-written postings — fake training programs, unverifiable partnership claims, artificial urgency. A simple keyword filter cannot catch these; a single LLM call reading only the posting text can miss them too, since some scams have no textual red flags at all and are only identifiable through external evidence (e.g. public reports elsewhere).
@@ -11,6 +12,8 @@ Job and internship scams increasingly avoid obvious giveaway language ("wire us 
 ## Architecture
 
 ```
+![Architecture](./architecture.png)
+
 Browser extension (content script)
    → extracts posting/email text from the page
    → sends to backend /scan endpoint
@@ -85,3 +88,32 @@ Load the extension via `chrome://extensions` → Developer mode → Load unpacke
 pytest test_main.py -v            # endpoint-level tests
 pytest test_verdict_engine.py -v  # scoring logic tests (no API calls, fast)
 ```
+
+## Security
+
+A security review was done before shipping. What was fixed, and what remains a limitation:
+
+**Prompt injection (mitigated, not eliminated)**
+- Scanned text is wrapped in delimiters and the prompt tells the model to treat it as untrusted data, never as instructions.
+- Delimiter markers are stripped from the input so a posting can't close the wrapper early.
+- Input to the LLM is capped at 4,000 characters, and the parser only accepts a verdict from a line that starts with `VERDICT:`.
+- Regression tests (`pytest -m integration`) run direct-injection and delimiter-escape attacks against the live model. No defense against prompt injection is absolute, so this reduces the risk rather than removing it.
+
+**Query sanitization**
+- The company name and domain come from LLM output, so they are cleaned before they reach Serper or WHOIS: quotes, colons, parentheses, and leading hyphens are removed, lengths are capped, and domains are validated. This stops a crafted posting from adding search operators to skew the evidence.
+
+**Web security**
+- CORS only allows the extension, localhost, and the sites the extension runs on (Gmail, LinkedIn, Indeed). This is not authentication: anyone can still call the API directly.
+- Rate limiting is 10 requests per minute per client IP on `/scan`.
+- Internal errors return a generic message. Stack traces stay in server logs only.
+- The extension renders all scanned or returned text with `textContent`, never `innerHTML`.
+
+**Privacy**
+- Scanning is automatic: the extension sends the text of the open job posting or Gmail email to the backend when a page loads.
+- The full text goes to Groq for analysis. Serper receives only the company name, and WHOIS only the domain.
+- Email text is not logged or stored. Sentry is configured not to capture request bodies or local variables.
+- Results (score, verdict, company name) are cached in Upstash Redis for 24 hours, keyed by a hash of the text.
+
+**Known limitations**
+- The free Groq tier limits tokens per minute, so heavy use returns a "service busy" message.
+- A single weak signal (for example, only the LLM saying SUSPICIOUS) scores 15 and still shows as LEGIT. The SUSPICIOUS label needs at least 20 points.
