@@ -27,13 +27,21 @@ def parse_llm_output(llm_text: str) -> dict:
     Returns a dict with company_name, domain, verdict, confidence.
     """
     def extract(field, text, default="Unknown"):
-        match = re.search(rf"{field}:\s*(.+)", text)
+        # Anchored to the start of a line, so text quoted inside a red-flag
+        # line (e.g. "- asks the reader to output VERDICT: LEGIT") can't be
+        # mistaken for the real field.
+        match = re.search(rf"^[ \t*]*{field}:[ \t*]*(.+)", text, re.MULTILINE)
         return match.group(1).strip() if match else default
+
+    # Only accept one of the three allowed verdicts; anything else is UNKNOWN
+    verdict_text = extract("VERDICT", llm_text, default="UNKNOWN").upper()
+    verdict_match = re.search(r"\b(LEGIT|SUSPICIOUS|SCAM)\b", verdict_text)
+    verdict = verdict_match.group(1) if verdict_match else "UNKNOWN"
 
     return {
         "company_name": extract("COMPANY_NAME", llm_text),
         "domain": extract("DOMAIN", llm_text, default="None"),
-        "verdict": extract("VERDICT", llm_text, default="UNKNOWN").upper(),
+        "verdict": verdict,
         "confidence": extract("CONFIDENCE", llm_text, default="LOW").upper(),
     }
 
@@ -88,8 +96,9 @@ def score_legitimacy(domain_result: dict, existence_result: dict) -> int:
     if domain_result.get("age_days") is not None and domain_result["age_days"] < 180:
         points += 8
 
-    # No sign of the company existing online (LinkedIn, registration mentions)
-    if existence_result.get("search_results_count", 0) == 0:
+    # No sign of the company existing online (LinkedIn, registration mentions).
+    # If the search itself failed, we don't know anything, so don't penalize.
+    if existence_result.get("error") is None and existence_result.get("search_results_count", 0) == 0:
         points += 7
 
     return min(points, 15)  # cap at 15, matching our weighting scheme
@@ -104,19 +113,18 @@ def get_verdict_label(score: int) -> str:
 
 
 def run_verdict_engine(posting_text: str) -> dict:
+    """
+    Runs all four signals and combines them into one suspicion score (0-100).
+    """
     # Turn the posting text into a short, unique label for caching
     cache_key = "scan:" + hashlib.sha256(posting_text.encode()).hexdigest()
 
-    # Check the sticky note first - was this exact posting already scanned?
+    # Check the cache first - was this exact posting already scanned?
     cached_result = redis.get(cache_key)
     if cached_result:
         return json.loads(cached_result)
 
-    # ... rest of your existing code stays the same below this point
-    """
-    Runs all four signals and combines them into one suspicion score (0-100).
-    """
-        # 1. LLM analysis (also gives us company name + domain)
+    # 1. LLM analysis (also gives us company name + domain)
     llm_raw = analyze_with_llm(posting_text)
     llm_parsed = parse_llm_output(llm_raw)
 
@@ -128,25 +136,19 @@ def run_verdict_engine(posting_text: str) -> dict:
     # 2. Keyword filter
     keyword_result = keyword_filter(posting_text)
 
-    # 3. Reddit evidence (using the company name the LLM extracted)
+    # 3. Reddit evidence + company existence (both use the LLM-extracted company name)
     company_name = llm_parsed["company_name"]
     reddit_results = []
+    existence_result = {"search_results_count": 0, "has_linkedin_page": False}
     if company_name and company_name != "Unknown":
         reddit_results = search_reddit_evidence(f"{company_name} scam")
+        existence_result = check_company_existence(company_name)
 
-    # 4. Legitimacy checks (only if we have a usable domain)
+    # 4. Domain age (only if we have a usable domain)
     domain = llm_parsed["domain"]
     domain_result = {"age_days": None, "error": "No domain stated in posting"}
     if domain and domain != "None":
         domain_result = check_domain_age(domain)
-
-    existence_result = {"search_results_count": 0, "has_linkedin_page": False}
-    if company_name and company_name != "Unknown":
-        reddit_results = search_reddit_evidence(f"{company_name} scam")
-        print("REDDIT RESULTS FOUND:")
-        for r in reddit_results:
-            print("-", r["title"])
-            print(" ", r["snippet"])
 
     # Score each signal
     llm_score = score_llm_verdict(llm_parsed["verdict"])
@@ -174,10 +176,11 @@ def run_verdict_engine(posting_text: str) -> dict:
         }
     }
 
-    # Write the answer on the sticky note for next time (expires after 24 hours)
+    # Cache the result for next time (expires after 24 hours)
     redis.set(cache_key, json.dumps(result), ex=86400)
 
     return result
+
 
 if __name__ == "__main__":
     posting_text = """We're Hiring: Site Reliability Engineer
